@@ -12,6 +12,9 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
+import cv2
+
+import annotation_utilities.annotation_tools as annotation_tools
 
 
 def get_sdpa_settings():
@@ -87,6 +90,26 @@ def mask_to_box(masks: torch.Tensor):
     bbox_coords = torch.stack((min_xs, min_ys, max_xs, max_ys), dim=-1)
 
     return bbox_coords
+
+
+def _load_img_as_tensor_nimbus(video_path, batch, image_size):
+
+    tileClient = video_path['tileClient']
+    datasetId = video_path['datasetId']
+    XY = batch[0]
+    Z = batch[1]
+    Time = batch[2]
+
+    images = annotation_tools.get_images_for_all_channels(tileClient, datasetId, XY, Z, Time)
+    layers = annotation_tools.get_layers(tileClient.client, datasetId)
+
+    merged_image = annotation_tools.process_and_merge_channels(images, layers)
+    merged_image_resized = cv2.resize(merged_image, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
+    img_np = merged_image_resized.astype(np.float32)
+
+    img = torch.from_numpy(img_np).permute(2, 0, 1)
+    video_width, video_height = merged_image.shape[0:2]  # the original video size
+    return img, video_height, video_width
 
 
 def _load_img_as_tensor(img_path, image_size):
@@ -226,47 +249,29 @@ def load_video_frames_from_jpg_images(
     `offload_video_to_cpu` is `False` and to CPU if `offload_video_to_cpu` is `True`.
 
     You can load a frame asynchronously by setting `async_loading_frames` to `True`.
+    (Currently asynchronous loading not supported when loading Nimbus videos.)
     """
-    if isinstance(video_path, str) and os.path.isdir(video_path):
-        jpg_folder = video_path
-    else:
-        raise NotImplementedError(
-            "Only JPEG frames are supported at this moment. For video files, you may use "
-            "ffmpeg (https://ffmpeg.org/) to extract frames into a folder of JPEG files, such as \n"
-            "```\n"
-            "ffmpeg -i <your_video>.mp4 -q:v 2 -start_number 0 <output_dir>/'%05d.jpg'\n"
-            "```\n"
-            "where `-q:v` generates high-quality JPEG frames and `-start_number 0` asks "
-            "ffmpeg to start the JPEG file from 00000.jpg."
-        )
 
-    frame_names = [
-        p
-        for p in os.listdir(jpg_folder)
-        if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
-    ]
-    frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
-    num_frames = len(frame_names)
-    if num_frames == 0:
-        raise RuntimeError(f"no images found in {jpg_folder}")
-    img_paths = [os.path.join(jpg_folder, frame_name) for frame_name in frame_names]
+    num_frames = len(video_path['batches'])
+
     img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
     img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
 
     if async_loading_frames:
-        lazy_images = AsyncVideoFrameLoader(
-            img_paths,
-            image_size,
-            offload_video_to_cpu,
-            img_mean,
-            img_std,
-            compute_device,
-        )
-        return lazy_images, lazy_images.video_height, lazy_images.video_width
+        print("Async loading frames not implemented")
+        # lazy_images = AsyncVideoFrameLoader(
+        #     img_paths,
+        #     image_size,
+        #     offload_video_to_cpu,
+        #     img_mean,
+        #     img_std,
+        #     compute_device,
+        # )
+        # return lazy_images, lazy_images.video_height, lazy_images.video_width
 
     images = torch.zeros(num_frames, 3, image_size, image_size, dtype=torch.float32)
-    for n, img_path in enumerate(tqdm(img_paths, desc="frame loading (JPEG)")):
-        images[n], video_height, video_width = _load_img_as_tensor(img_path, image_size)
+    for i, batch in enumerate(tqdm(video_path['batches'], desc="Loading frames")):
+        images[i], video_height, video_width = _load_img_as_tensor_nimbus(video_path, batch, image_size)
     if not offload_video_to_cpu:
         images = images.to(compute_device)
         img_mean = img_mean.to(compute_device)
