@@ -202,35 +202,43 @@ def load_video_frames(
     compute_device=torch.device("cuda"),
 ):
     """
-    Load the video frames from video_path. The frames are resized to image_size as in
-    the model and are loaded to GPU if offload_video_to_cpu=False. This is used by the demo.
+    Load the video frames from a directory of JPEG files ("<frame_index>.jpg" format).
+
+    The frames are resized to image_size x image_size and are loaded to GPU if
+    `offload_video_to_cpu` is `False` and to CPU if `offload_video_to_cpu` is `True`.
+
+    You can load a frame asynchronously by setting `async_loading_frames` to `True`.
+    (Currently asynchronous loading not supported when loading Nimbus videos.)
     """
-    is_bytes = isinstance(video_path, bytes)
-    is_str = isinstance(video_path, str)
-    is_mp4_path = is_str and os.path.splitext(video_path)[-1] in [".mp4", ".MP4"]
-    if is_bytes or is_mp4_path:
-        return load_video_frames_from_video_file(
-            video_path=video_path,
-            image_size=image_size,
-            offload_video_to_cpu=offload_video_to_cpu,
-            img_mean=img_mean,
-            img_std=img_std,
-            compute_device=compute_device,
-        )
-    elif is_str and os.path.isdir(video_path):
-        return load_video_frames_from_jpg_images(
-            video_path=video_path,
-            image_size=image_size,
-            offload_video_to_cpu=offload_video_to_cpu,
-            img_mean=img_mean,
-            img_std=img_std,
-            async_loading_frames=async_loading_frames,
-            compute_device=compute_device,
-        )
-    else:
-        raise NotImplementedError(
-            "Only MP4 video and JPEG folder are supported at this moment"
-        )
+
+    num_frames = len(video_path['batches'])
+
+    img_mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
+    img_std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
+
+    if async_loading_frames:
+        print("Async loading frames not implemented")
+        # lazy_images = AsyncVideoFrameLoader(
+        #     img_paths,
+        #     image_size,
+        #     offload_video_to_cpu,
+        #     img_mean,
+        #     img_std,
+        #     compute_device,
+        # )
+        # return lazy_images, lazy_images.video_height, lazy_images.video_width
+
+    images = torch.zeros(num_frames, 3, image_size, image_size, dtype=torch.float32)
+    for i, batch in enumerate(tqdm(video_path['batches'], desc="Loading frames")):
+        images[i], video_height, video_width = _load_img_as_tensor_nimbus(video_path, batch, image_size)
+    if not offload_video_to_cpu:
+        images = images.to(compute_device)
+        img_mean = img_mean.to(compute_device)
+        img_std = img_std.to(compute_device)
+    # normalize by mean and std
+    images -= img_mean
+    images /= img_std
+    return images, video_height, video_width
 
 
 def load_video_frames_from_jpg_images(
